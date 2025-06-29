@@ -396,7 +396,7 @@ def main():
             st.info("👆 Click 'Run Simulation' to start the rocket trajectory analysis!")
             
             # Show example visualization
-            st.subheader("🎯 What You'll Get")
+            st.subheader("🎯 Features")
             st.markdown("""
             This simulator provides:
             - **Real-time trajectory calculation** with atmospheric effects
