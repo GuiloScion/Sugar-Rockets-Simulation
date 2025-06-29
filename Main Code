@@ -1,0 +1,314 @@
+import React, { useState, useEffect, useRef } from 'react';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, ScatterChart, Scatter } from 'recharts';
+import { Play, Pause, RotateCcw, Download, Settings } from 'lucide-react';
+
+const RocketSimulator = () => {
+  const [isRunning, setIsRunning] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [trajectoryData, setTrajectoryData] = useState([]);
+  const [rocketPosition, setRocketPosition] = useState({ x: 0, y: 0 });
+  const [showSettings, setShowSettings] = useState(false);
+  const intervalRef = useRef(null);
+
+  // Rocket parameters (realistic sugar rocket values)
+  const [params, setParams] = useState({
+    // Motor characteristics
+    totalImpulse: 160, // Newton-seconds (typical H-class motor)
+    burnTime: 2.8, // seconds
+    propellantMass: 0.24, // kg
+    dryMass: 0.8, // kg (rocket without propellant)
+    
+    // Physical characteristics
+    diameter: 0.054, // meters (54mm)
+    length: 0.6, // meters
+    dragCoefficient: 0.45,
+    
+    // Launch parameters
+    launchAngle: 85, // degrees from horizontal
+    launchHeight: 0, // meters AGL
+    
+    // Environmental
+    airDensity: 1.225, // kg/m³ at sea level
+    gravity: 9.81, // m/s²
+    windSpeed: 2.0, // m/s horizontal
+    
+    // Advanced parameters
+    thrustCurveType: 'progressive', // progressive, regressive, neutral
+    finEfficiency: 0.85,
+    recoveryDeployAltitude: 150, // meters AGL for parachute
+    recoveryDragCoeff: 1.3, // parachute drag coefficient
+    recoveryArea: 0.5 // parachute area m²
+  });
+
+  // Physics simulation state
+  const [simState, setSimState] = useState({
+    x: 0, y: 0, // position
+    vx: 0, vy: 0, // velocity
+    ax: 0, ay: 0, // acceleration
+    mass: 0,
+    thrust: 0,
+    drag: 0,
+    phase: 'powered', // powered, ballistic, recovery
+    maxAltitude: 0,
+    maxVelocity: 0,
+    burnoutTime: 0,
+    apogeeTime: 0
+  });
+
+  // Thrust curve models
+  const getThrustAtTime = (t, burnTime, totalImpulse, curveType) => {
+    if (t > burnTime) return 0;
+    
+    const avgThrust = totalImpulse / burnTime;
+    const progress = t / burnTime;
+    
+    switch (curveType) {
+      case 'progressive':
+        // Thrust increases over time (sugar rockets often behave this way)
+        return avgThrust * (0.3 + 1.4 * progress);
+      case 'regressive':
+        // Thrust decreases over time
+        return avgThrust * (1.7 - 1.4 * progress);
+      case 'neutral':
+        // Constant thrust
+        return avgThrust;
+      default:
+        return avgThrust;
+    }
+  };
+
+  // Atmospheric model (simplified)
+  const getAirDensity = (altitude) => {
+    // Exponential atmosphere model
+    const scaleHeight = 8400; // meters
+    return params.airDensity * Math.exp(-altitude / scaleHeight);
+  };
+
+  // Advanced drag calculation
+  const calculateDrag = (velocity, altitude, area, dragCoeff) => {
+    const rho = getAirDensity(altitude);
+    const v_mag = Math.sqrt(velocity.x ** 2 + velocity.y ** 2);
+    const drag_mag = 0.5 * rho * v_mag ** 2 * area * dragCoeff;
+    
+    if (v_mag === 0) return { x: 0, y: 0 };
+    
+    return {
+      x: -drag_mag * (velocity.x / v_mag),
+      y: -drag_mag * (velocity.y / v_mag)
+    };
+  };
+
+  // Simulate one time step
+  const simulateStep = (state, dt) => {
+    const newState = { ...state };
+    const time = currentTime;
+    
+    // Calculate current mass
+    if (time <= params.burnTime) {
+      const burnProgress = time / params.burnTime;
+      newState.mass = params.dryMass + params.propellantMass * (1 - burnProgress);
+    } else {
+      newState.mass = params.dryMass;
+    }
+    
+    // Calculate thrust
+    newState.thrust = getThrustAtTime(time, params.burnTime, params.totalImpulse, params.thrustCurveType);
+    
+    // Reference area for drag
+    const area = Math.PI * (params.diameter / 2) ** 2;
+    
+    // Determine flight phase
+    if (time <= params.burnTime) {
+      newState.phase = 'powered';
+    } else if (state.vy > 0) {
+      newState.phase = 'ballistic';
+    } else if (state.y > params.recoveryDeployAltitude) {
+      newState.phase = 'recovery';
+    } else {
+      newState.phase = 'landed';
+    }
+    
+    // Calculate forces
+    const launchAngleRad = (params.launchAngle * Math.PI) / 180;
+    
+    // Thrust force components (only during powered flight)
+    let thrustX = 0, thrustY = 0;
+    if (newState.phase === 'powered') {
+      thrustX = newState.thrust * Math.cos(launchAngleRad);
+      thrustY = newState.thrust * Math.sin(launchAngleRad);
+    }
+    
+    // Drag force
+    let dragCoeff = params.dragCoefficient;
+    let dragArea = area;
+    
+    if (newState.phase === 'recovery') {
+      dragCoeff = params.recoveryDragCoeff;
+      dragArea = params.recoveryArea;
+    }
+    
+    const drag = calculateDrag({ x: state.vx, y: state.vy }, state.y, dragArea, dragCoeff);
+    
+    // Wind effect (simplified)
+    const windDrag = -0.1 * (state.vx - params.windSpeed);
+    
+    // Net acceleration
+    newState.ax = (thrustX + drag.x + windDrag) / newState.mass;
+    newState.ay = (thrustY + drag.y - params.gravity * newState.mass) / newState.mass;
+    
+    // Update velocity and position (Euler integration)
+    newState.vx = state.vx + newState.ax * dt;
+    newState.vy = state.vy + newState.ay * dt;
+    newState.x = state.x + newState.vx * dt;
+    newState.y = Math.max(0, state.y + newState.vy * dt); // Ground check
+    
+    // Track maximums
+    newState.maxAltitude = Math.max(state.maxAltitude, newState.y);
+    const velocity = Math.sqrt(newState.vx ** 2 + newState.vy ** 2);
+    newState.maxVelocity = Math.max(state.maxVelocity, velocity);
+    
+    // Track events
+    if (time > params.burnTime && state.burnoutTime === 0) {
+      newState.burnoutTime = time;
+    }
+    if (newState.vy < 0 && state.vy >= 0 && state.apogeeTime === 0) {
+      newState.apogeeTime = time;
+    }
+    
+    return newState;
+  };
+
+  // Run simulation
+  const runSimulation = () => {
+    if (isRunning) return;
+    
+    setIsRunning(true);
+    setCurrentTime(0);
+    setTrajectoryData([]);
+    setSimState({
+      x: 0, y: params.launchHeight,
+      vx: 0, vy: 0,
+      ax: 0, ay: 0,
+      mass: params.dryMass + params.propellantMass,
+      thrust: 0, drag: 0,
+      phase: 'powered',
+      maxAltitude: 0, maxVelocity: 0,
+      burnoutTime: 0, apogeeTime: 0
+    });
+    
+    const dt = 0.01; // 10ms time steps
+    let time = 0;
+    let state = {
+      x: 0, y: params.launchHeight,
+      vx: 0, vy: 0,
+      ax: 0, ay: 0,
+      mass: params.dryMass + params.propellantMass,
+      thrust: 0, drag: 0,
+      phase: 'powered',
+      maxAltitude: 0, maxVelocity: 0,
+      burnoutTime: 0, apogeeTime: 0
+    };
+    
+    const trajectory = [];
+    
+    intervalRef.current = setInterval(() => {
+      for (let i = 0; i < 5; i++) { // 5 steps per frame for speed
+        state = simulateStep(state, dt);
+        time += dt;
+        
+        if (time % 0.1 < dt) { // Log every 0.1 seconds
+          trajectory.push({
+            time: parseFloat(time.toFixed(2)),
+            x: parseFloat(state.x.toFixed(2)),
+            y: parseFloat(state.y.toFixed(2)),
+            velocity: parseFloat(Math.sqrt(state.vx ** 2 + state.vy ** 2).toFixed(2)),
+            altitude: parseFloat(state.y.toFixed(2)),
+            thrust: parseFloat(state.thrust.toFixed(2)),
+            phase: state.phase
+          });
+        }
+        
+        if (state.y <= 0 && time > 1) {
+          setIsRunning(false);
+          clearInterval(intervalRef.current);
+          break;
+        }
+        
+        if (time > 60) { // Safety timeout
+          setIsRunning(false);
+          clearInterval(intervalRef.current);
+          break;
+        }
+      }
+      
+      setCurrentTime(time);
+      setSimState(state);
+      setRocketPosition({ x: state.x, y: state.y });
+      setTrajectoryData([...trajectory]);
+    }, 50);
+  };
+
+  const stopSimulation = () => {
+    setIsRunning(false);
+    if (intervalRef.current) {
+      clearInterval(intervalRef.current);
+    }
+  };
+
+  const resetSimulation = () => {
+    stopSimulation();
+    setCurrentTime(0);
+    setTrajectoryData([]);
+    setRocketPosition({ x: 0, y: 0 });
+    setSimState({
+      x: 0, y: params.launchHeight,
+      vx: 0, vy: 0,
+      ax: 0, ay: 0,
+      mass: params.dryMass + params.propellantMass,
+      thrust: 0, drag: 0,
+      phase: 'powered',
+      maxAltitude: 0, maxVelocity: 0,
+      burnoutTime: 0, apogeeTime: 0
+    });
+  };
+
+  const exportData = () => {
+    const csv = ['Time,X,Y,Velocity,Altitude,Thrust,Phase']
+      .concat(trajectoryData.map(d => 
+        `${d.time},${d.x},${d.y},${d.velocity},${d.altitude},${d.thrust},${d.phase}`
+      ))
+      .join('\n');
+    
+    const blob = new Blob([csv], { type: 'text/csv' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'rocket_trajectory.csv';
+    a.click();
+  };
+
+  useEffect(() => {
+    return () => {
+      if (intervalRef.current) {
+        clearInterval(intervalRef.current);
+      }
+    };
+  }, []);
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-slate-900 via-blue-900 to-indigo-900 text-white p-6">
+      <div className="max-w-7xl mx-auto">
+        <div className="text-center mb-8">
+          <h1 className="text-4xl font-bold mb-2 bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent">
+            Advanced Sugar Rocket Trajectory Simulator
+          </h1>
+          <p className="text-lg text-blue-200">High-fidelity physics simulation with atmospheric modeling</p>
+        </div>
+
+        {/* Control Panel */}
+        <div className="bg-slate-800/50 backdrop-blur-sm rounded-xl p-6 mb-6 border border-slate-700">
+          <div className="flex flex-wrap items-center gap-4 mb-4">
+            <button
+              onClick={runSimulation}
+              disabled={isRunning}
+              className="flex items-center gap-2 bg-green-600 hover:bg-green-700 disabled:bg-gray-600 p
