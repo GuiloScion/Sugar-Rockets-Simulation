@@ -480,52 +480,24 @@ def main():
             st.session_state.simulation_data = df
             st.session_state.simulator = simulator
         
-        st.subheader("📊 Export Options")
+        st.subheader("🎮 Controls")
         
-        if 'simulation_data' in st.session_state:
-            # CSV Export
-            csv = st.session_state.simulation_data.to_csv(index=False)
-            st.download_button(
-                label="📈 Download CSV",
-                data=csv,
-                file_name="rocket_trajectory.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+        if st.button("🚀 Run Simulation", type="primary", use_container_width=True):
+            # Create and run simulation
+            simulator = RocketSimulator(params)
             
-            # MATLAB Export
-            matlab_script = generate_matlab_script(st.session_state.simulation_data, params)
-            st.download_button(
-                label="🔬 Download MATLAB Script",
-                data=matlab_script,
-                file_name="rocket_visualization.m",
-                mime="text/plain",
-                use_container_width=True
-            )
+            # Progress bar
+            progress_bar = st.progress(0)
+            status_text = st.empty()
             
-            # JSON Export for advanced 3D applications
-            import json
-            json_data = {
-                'metadata': {
-                    'rocket_params': params,
-                    'simulation_info': {
-                        'max_altitude': float(st.session_state.simulator.state['max_altitude']),
-                        'max_velocity': float(st.session_state.simulator.state['max_velocity']),
-                        'flight_time': float(st.session_state.simulation_data['time'].iloc[-1]),
-                        'burnout_time': float(st.session_state.simulator.state['burnout_time']),
-                        'apogee_time': float(st.session_state.simulator.state['apogee_time'])
-                    }
-                },
-                'trajectory': st.session_state.simulation_data.to_dict('records')
-            }
-            json_str = json.dumps(json_data, indent=2)
-            st.download_button(
-                label="📋 Download JSON",
-                data=json_str,
-                file_name="rocket_data_complete.json",
-                mime="application/json",
-                use_container_width=True
-            )
+            with st.spinner("Running simulation..."):
+                df = simulator.run_full_simulation()
+                progress_bar.progress(100)
+                status_text.text("Simulation complete!")
+            
+            # Store results in session state
+            st.session_state.simulation_data = df
+            st.session_state.simulator = simulator
     
     with col1:
         # Display results if simulation has been run
@@ -583,71 +555,4 @@ def main():
             
             # Velocity vs Time
             fig.add_trace(
-                go.Scatter(x=df['time'], y=df['velocity'], name='Velocity',
-                          line=dict(color='#E74C3C', width=3)),
-                row=1, col=2
-            )
-            
-            # 2D Trajectory
-            fig.add_trace(
-                go.Scatter(x=df['x'], y=df['y'], name='Trajectory',
-                          line=dict(color='#2ECC71', width=3),
-                          mode='lines+markers', marker=dict(size=2)),
-                row=2, col=1
-            )
-            
-            # Thrust vs Time
-            fig.add_trace(
-                go.Scatter(x=df['time'], y=df['thrust'], name='Thrust',
-                          line=dict(color='#F39C12', width=3)),
-                row=2, col=2
-            )
-            
-            # Update layout
-            fig.update_xaxes(title_text="Time (s)", row=1, col=1)
-            fig.update_yaxes(title_text="Altitude (m)", row=1, col=1)
-            fig.update_xaxes(title_text="Time (s)", row=1, col=2)
-            fig.update_yaxes(title_text="Velocity (m/s)", row=1, col=2)
-            fig.update_xaxes(title_text="Horizontal Distance (m)", row=2, col=1)
-            fig.update_yaxes(title_text="Altitude (m)", row=2, col=1)
-            fig.update_xaxes(title_text="Time (s)", row=2, col=2)
-            fig.update_yaxes(title_text="Thrust (N)", row=2, col=2)
-            
-            fig.update_layout(
-                height=800,
-                showlegend=False,
-                title_text="Rocket Flight Analysis",
-                title_x=0.5
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
-            
-            # Data table
-            st.subheader("📋 Detailed Flight Data")
-            
-            # Sample data every 0.5 seconds for display
-            display_df = df[df['time'] % 0.5 < 0.02].copy()
-            display_df = display_df.round(2)
-            
-            st.dataframe(
-                display_df[['time', 'altitude', 'velocity', 'thrust', 'phase']],
-                use_container_width=True
-            )
-            
-        else:
-            st.info("👆 Click 'Run Simulation' to start the rocket trajectory analysis!")
-            
-            # Show example visualization
-            st.subheader("🎯 What You'll Get")
-            st.markdown("""
-            This simulator provides:
-            - **Real-time trajectory calculation** with atmospheric effects
-            - **Multi-phase flight modeling** (powered, ballistic, recovery)
-            - **Advanced drag calculations** including altitude-dependent air density
-            - **Configurable thrust curves** (progressive, neutral, regressive)
-            - **Recovery system modeling** with parachute deployment
-            - **Detailed performance metrics** and exportable data
-            """)
-
-if __name__ == "__main__":
-    main()
+                go.Scatter(x=df['time'], y=df['v
